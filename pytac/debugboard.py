@@ -621,6 +621,22 @@ class Pic32cxBoard(Board):
                 return True
         return False
 
+    @staticmethod
+    def _product(serial_number):
+        """Return the USB product string descriptor for ``serial_number``.
+
+        Read via ``pyserial`` (sysfs on Linux, IORegistry on macOS) instead of
+        ``usb.core``, which often can't read string descriptors without
+        elevated permissions. ``port.product`` is populated on Linux and macOS;
+        on Windows pyserial only exposes ``port.description`` (the friendly
+        name), so fall back to that.
+        """
+        for port in serial.tools.list_ports.comports():
+            if port.serial_number != serial_number:
+                continue
+            return port.product or port.description
+        return None
+
     def __init__(self, serial, tac_config_path):
         Board.__init__(self)
         self.usb_device = lambda: None
@@ -630,9 +646,10 @@ class Pic32cxBoard(Board):
         device_list = json.loads(f.read())
         f.close()
         catalog = device_list.get("catalog")
-        # The platform is identified by the part of the serial number before
-        # "XX", which matches the usb_descriptor field in devicelist.json.
-        self.usb_descriptor = serial.split("XX")[0]
+        # The board is identified by its USB product string descriptor, which
+        # matches the usb_descriptor field in devicelist.json (same scheme as
+        # FtdiBoard). The serial number does not reliably encode it.
+        self.usb_descriptor = self._product(serial)
         conf_dict = next(
             (x for x in catalog if x.get("usb_descriptor") == self.usb_descriptor),
             None,
@@ -643,7 +660,20 @@ class Pic32cxBoard(Board):
             )
 
         if conf is None:
-            logger.error("No matching PIC32CX config found")
+            logger.error(
+                "No matching PIC32CX config found for product %r (serial %s). "
+                "Known PIC32CX usb_descriptors: %s",
+                self.usb_descriptor,
+                serial,
+                ", ".join(
+                    sorted(
+                        repr(x.get("usb_descriptor"))
+                        for x in catalog
+                        if "PIC32" in (x.get("configPath") or "")
+                    )
+                )
+                or "<none>",
+            )
             sys.exit(1)
 
         f = open(conf, "rb")
